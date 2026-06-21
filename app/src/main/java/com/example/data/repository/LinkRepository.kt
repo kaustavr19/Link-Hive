@@ -60,6 +60,9 @@ class LinkRepository(private val context: Context) {
     // Secondary Enrichment Step
     suspend fun enrichLink(link: LinkRecord): Unit = withContext(Dispatchers.IO) {
         try {
+            // 0. Try direct HTML scraping (fantastic for Pinterest & redirected or active links)
+            val scrapedTitle = ApiService.scrapeTitle(link.url)
+
             // 1. Try oEmbed if YouTube/Vimeo
             val oEmbed = ApiService.fetchOEmbed(link.url)
             val oEmbedTitle = oEmbed?.title
@@ -82,7 +85,7 @@ class LinkRepository(private val context: Context) {
             }
 
             // Derive final merged values
-            val finalTitle = oEmbedTitle ?: aiTitle ?: link.name
+            val finalTitle = scrapedTitle ?: oEmbedTitle ?: aiTitle ?: link.name
             val finalThumbnail = oEmbedThumbnail ?: link.thumbnail
             val finalSummary = aiSummary ?: link.summary
             val finalTags = if (aiTags != null) aiTags.joinToString(",") else link.tags

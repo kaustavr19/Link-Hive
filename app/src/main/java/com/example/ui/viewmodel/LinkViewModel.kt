@@ -18,6 +18,10 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import com.google.firebase.FirebaseApp
+import com.google.firebase.FirebaseOptions
+import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.auth.GoogleAuthProvider
 
 sealed interface UiState {
     object Idle : UiState
@@ -44,9 +48,22 @@ data class SearchState(
     val aiSearchError: String? = null
 )
 
+data class GoogleUserProfile(
+    val email: String,
+    val displayName: String,
+    val photoUrl: String? = null,
+    val idToken: String
+)
+
 class LinkViewModel(application: Application) : AndroidViewModel(application) {
     private val repository = LinkRepository(application)
     private val sharedPref = application.getSharedPreferences("linkhive_preferences", Context.MODE_PRIVATE)
+
+    // Google Simulation Authentication State
+    private val _currentUser = MutableStateFlow<GoogleUserProfile?>(null)
+    val currentUser: StateFlow<GoogleUserProfile?> = _currentUser.asStateFlow()
+
+    private var firebaseAuth: FirebaseAuth? = null
 
     // Observables
     val allLinks: StateFlow<List<LinkRecord>> = repository.allLinks.stateIn(
@@ -80,6 +97,146 @@ class LinkViewModel(application: Application) : AndroidViewModel(application) {
             val colorHex = sharedPref.getString("custom_cat_color_$trimmed", "#9CA3AF") ?: "#9CA3AF"
             com.example.ui.theme.CategoryColors.registerCustomCategory(trimmed, colorHex, emoji)
         }
+
+        // Initialize Firebase manual client or default client
+        try {
+            val existingApp = try {
+                FirebaseApp.getInstance()
+            } catch (e: Exception) {
+                null
+            }
+
+            if (existingApp == null) {
+                val apiKey = try { com.example.BuildConfig.FIREBASE_API_KEY } catch (e: Exception) { "" }
+                val appId = try { com.example.BuildConfig.FIREBASE_APPLICATION_ID } catch (e: Exception) { "" }
+                val projectId = try { com.example.BuildConfig.FIREBASE_PROJECT_ID } catch (e: Exception) { "" }
+
+                if (apiKey.isNotBlank() && appId.isNotBlank() && projectId.isNotBlank()) {
+                    Log.d("LinkViewModel", "Initializing Firebase manually from BuildConfig keys.")
+                    val options = FirebaseOptions.Builder()
+                        .setApiKey(apiKey)
+                        .setApplicationId(appId)
+                        .setProjectId(projectId)
+                        .build()
+                    FirebaseApp.initializeApp(application, options)
+                } else {
+                    Log.w("LinkViewModel", "No Firebase automatic config found, nor manual properties in BuildConfig.")
+                }
+            }
+
+            firebaseAuth = FirebaseAuth.getInstance()
+            Log.d("LinkViewModel", "FirebaseAuth initialised successfully.")
+        } catch (e: Exception) {
+            Log.e("LinkViewModel", "Firebase authentication startup failure: ${e.message}")
+        }
+
+        // Load saved Google User Profile - first check active Firebase session, then local simulated session fallback
+        val activeFirebaseUser = firebaseAuth?.currentUser
+        if (activeFirebaseUser != null) {
+            Log.d("LinkViewModel", "Discovered existing active Firebase user session.")
+            _currentUser.value = GoogleUserProfile(
+                email = activeFirebaseUser.email ?: "unknown@gmail.com",
+                displayName = activeFirebaseUser.displayName ?: "Firebase User",
+                photoUrl = activeFirebaseUser.photoUrl?.toString(),
+                idToken = sharedPref.getString("google_user_id", "firebase_active") ?: "firebase_active"
+            )
+        } else {
+            val savedEmail = sharedPref.getString("google_user_email", null)
+            val savedName = sharedPref.getString("google_user_name", null)
+            val savedPhoto = sharedPref.getString("google_user_photo", null)
+            val savedId = sharedPref.getString("google_user_id", null)
+            if (savedEmail != null && savedName != null && savedId != null) {
+                _currentUser.value = GoogleUserProfile(
+                    email = savedEmail,
+                    displayName = savedName,
+                    photoUrl = savedPhoto,
+                    idToken = savedId
+                )
+            }
+        }
+    }
+
+    fun signInWithGoogleSimulated(email: String, name: String, photoUrl: String?) {
+        val user = GoogleUserProfile(
+            email = email,
+            displayName = name,
+            photoUrl = photoUrl,
+            idToken = "sim_token_${System.currentTimeMillis()}"
+        )
+        _currentUser.value = user
+        sharedPref.edit()
+            .putString("google_user_email", email)
+            .putString("google_user_name", name)
+            .putString("google_user_photo", photoUrl)
+            .putString("google_user_id", user.idToken)
+            .apply()
+        showToast("Welcome back, $name! 🐝")
+    }
+
+    fun isFirebaseAvailable(): Boolean {
+        return firebaseAuth != null
+    }
+
+    fun getGoogleWebClientId(): String? {
+        val id = try { com.example.BuildConfig.GOOGLE_WEB_CLIENT_ID } catch (e: Exception) { "" }
+        return id.ifBlank { null }
+    }
+
+    fun signInWithFirebaseGoogleToken(idToken: String, onComplete: (Boolean, String?) -> Unit) {
+        val auth = firebaseAuth
+        if (auth == null) {
+            onComplete(false, "Firebase auth is not initialized or configured.")
+            return
+        }
+
+        val credential = GoogleAuthProvider.getCredential(idToken, null)
+        auth.signInWithCredential(credential)
+            .addOnCompleteListener { task ->
+                if (task.isSuccessful) {
+                    val firebaseUser = task.result?.user
+                    if (firebaseUser != null) {
+                        val email = firebaseUser.email ?: "unknown@gmail.com"
+                        val displayName = firebaseUser.displayName ?: "Firebase User"
+                        val photoUrl = firebaseUser.photoUrl?.toString()
+
+                        val user = GoogleUserProfile(
+                            email = email,
+                            displayName = displayName,
+                            photoUrl = photoUrl,
+                            idToken = idToken
+                        )
+                        _currentUser.value = user
+                        sharedPref.edit()
+                            .putString("google_user_email", email)
+                            .putString("google_user_name", displayName)
+                            .putString("google_user_photo", photoUrl)
+                            .putString("google_user_id", idToken)
+                            .apply()
+                        onComplete(true, null)
+                    } else {
+                        onComplete(false, "Succeeded firebase authentication but user profile is null.")
+                    }
+                } else {
+                    onComplete(false, task.exception?.localizedMessage ?: "Unknown authentication exception.")
+                }
+            }
+    }
+
+    fun signOutGoogle() {
+        val currentName = _currentUser.value?.displayName ?: "User"
+        try {
+            firebaseAuth?.signOut()
+        } catch (e: Exception) {
+            Log.e("LinkViewModel", "Error signing out of Firebase Auth: ${e.message}")
+        }
+        _currentUser.value = null
+        sharedPref.edit()
+            .remove("google_user_email")
+            .remove("google_user_name")
+            .remove("google_user_photo")
+            .remove("google_user_id")
+            .apply()
+        showToast("Signed out. Goodbye, $currentName!")
     }
 
     fun addCustomCategory(newCategory: String, emoji: String, colorHex: String) {
@@ -215,7 +372,11 @@ class LinkViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun onCategoryChipSelected(cat: String) {
-        _derivedCategory.value = cat
+        if (_derivedCategory.value == cat) {
+            _derivedCategory.value = "uncategorized"
+        } else {
+            _derivedCategory.value = cat
+        }
     }
 
     fun clearInputs() {
@@ -407,7 +568,7 @@ class LinkViewModel(application: Application) : AndroidViewModel(application) {
 
     // --- Helper feedback toast ---
 
-    private fun showToast(msg: String) {
+    fun showToast(msg: String) {
         _feedbackMessage.value = msg
     }
 

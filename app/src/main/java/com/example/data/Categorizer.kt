@@ -36,6 +36,20 @@ object Categorizer {
     fun isOpaqueOrNumeric(s: String): Boolean {
         if (s.isEmpty()) return true
         if (s.all { it.isDigit() }) return true
+        
+        // Base62 / Base58 short random sharing IDs or codes (e.g. length 5-11 with mixed letters and numbers and no standard words/delimiters like "-")
+        val hasLetters = s.any { it.isLetter() }
+        val hasDigits = s.any { it.isDigit() }
+        val hasUpper = s.any { it.isUpperCase() }
+        val hasLower = s.any { it.isLowerCase() }
+        
+        if (s.length in 5..11 && hasLetters && hasDigits && !s.contains("-") && !s.contains("_")) {
+            return true
+        }
+        if (s.length in 5..11 && hasUpper && hasLower && !s.contains("-") && !s.contains("_")) {
+            return true
+        }
+
         // Check if it's a long hex string/guid/id (e.g. length >= 12 with mixed letters/numbers and no normal vowels)
         if (s.length >= 12 && s.matches(Regex("^[a-fA-F0-9_\\-]+$"))) {
             // If it has lots of digits relative to letters, or has hex characters
@@ -86,7 +100,11 @@ object Categorizer {
             // Fallback to domain label
             val domain = if (segments.isNotEmpty()) segments[0] else "Link"
             val label = domain.split(".")[0]
-            return label.replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.ROOT) else it.toString() }
+            val formattedLabel = label.replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.ROOT) else it.toString() }
+            if (domain.contains("pin.it") || domain.contains("pinterest")) {
+                return "Pinterest"
+            }
+            return formattedLabel
         }
 
         // Drop the domain part
@@ -102,7 +120,26 @@ object Categorizer {
                 wordCount * 10 + cleanS.length
             } ?: candidates.first()
         } else {
-            segments[1] // Default fallback segment
+            // Check if segments[1] is indeed opaque/numeric, if so we prefer a descriptive domain fallback
+            val fallbackSeg = segments[1].substringBefore("?").substringBefore("#")
+            if (isOpaqueOrNumeric(fallbackSeg)) {
+                val domain = segments[0].lowercase(Locale.ROOT)
+                if (domain.contains("pinterest") || domain.contains("pin.it")) {
+                    return "Pinterest Pin"
+                } else if (domain.contains("youtube") || domain.contains("youtu.be")) {
+                    return "YouTube Video"
+                } else if (domain.contains("twitter") || domain.contains("x.com")) {
+                    return "Twitter Post"
+                } else if (domain.contains("linkedin")) {
+                    return "LinkedIn Link"
+                } else if (domain.contains("github")) {
+                    return "GitHub Link"
+                } else {
+                    val label = domain.split(".")[0]
+                    return label.replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.ROOT) else it.toString() }
+                }
+            }
+            segments[1]
         }
 
         val deSlugged = bestSegment.substringBefore("?").substringBefore("#")
@@ -134,6 +171,14 @@ object Categorizer {
                 word.replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.ROOT) else it.toString() }
             }
         }.joinToString(" ")
+
+        val lowerCaps = capitalized.lowercase(Locale.ROOT)
+        if (lowerCaps == "pin" || lowerCaps == "pin.it") {
+            val domain = segments[0].lowercase(Locale.ROOT)
+            if (domain.contains("pinterest") || domain.contains("pin.it")) {
+                return "Pinterest Pin"
+            }
+        }
 
         return capitalized
     }

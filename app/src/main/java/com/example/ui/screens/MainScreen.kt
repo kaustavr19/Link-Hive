@@ -132,6 +132,12 @@ import com.example.data.model.LinkRecord
 import com.example.ui.theme.CategoryColors
 import com.example.ui.theme.JobStatusColors
 import com.example.ui.viewmodel.LinkViewModel
+import com.google.android.gms.auth.api.signin.GoogleSignIn
+import com.google.android.gms.auth.api.signin.GoogleSignInOptions
+import com.google.android.gms.common.api.ApiException
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.runtime.rememberCoroutineScope
 import com.example.ui.viewmodel.NavigationTarget
 import java.util.Locale
 
@@ -161,11 +167,14 @@ fun MainScreen(
     val feedbackMessage by viewModel.feedbackMessage.collectAsState()
     val unreadOnlyFilter by viewModel.unreadOnlyFilter.collectAsState()
     val customCategories by viewModel.customCategories.collectAsState()
+    val currentUser by viewModel.currentUser.collectAsState()
 
     // Add Sheet / Dialog state
     var isAddSheetOpen by remember { mutableStateOf(false) }
     var linkToEdit by remember { mutableStateOf<LinkRecord?>(null) }
     var isCreateGroupDialogOpen by remember { mutableStateOf(false) }
+    var isGoogleAuthPickerOpen by remember { mutableStateOf(false) }
+    var isGoogleProfileDetailsOpen by remember { mutableStateOf(false) }
 
     // Display localized feedback alerts (like brief Toast)
     LaunchedEffect(feedbackMessage) {
@@ -191,7 +200,15 @@ fun MainScreen(
                     onSelectTab = { viewModel.selectTab(it) },
                     onAddClick = { isAddSheetOpen = true },
                     onToggleTheme = onToggleTheme,
-                    isDarkTheme = isDarkTheme
+                    isDarkTheme = isDarkTheme,
+                    currentUser = currentUser,
+                    onProfileClick = {
+                        if (currentUser == null) {
+                            isGoogleAuthPickerOpen = true
+                        } else {
+                            isGoogleProfileDetailsOpen = true
+                        }
+                    }
                 )
 
                 // Main Workspace Area
@@ -326,7 +343,15 @@ fun MainScreen(
                         currentTab = currentTab,
                         onToggleTheme = onToggleTheme,
                         isDark = isDarkTheme,
-                        onSelectTab = { viewModel.selectTab(it) }
+                        onSelectTab = { viewModel.selectTab(it) },
+                        currentUser = currentUser,
+                        onProfileClick = {
+                            if (currentUser == null) {
+                                isGoogleAuthPickerOpen = true
+                            } else {
+                                isGoogleProfileDetailsOpen = true
+                            }
+                        }
                     )
 
                     Spacer(modifier = Modifier.height(16.dp))
@@ -452,24 +477,87 @@ fun MainScreen(
         }
 
         linkToEdit?.let { link ->
-            EditLinkDialog(
-                link = link,
-                customCategories = customCategories,
-                isDark = isDarkTheme,
-                onDismiss = { linkToEdit = null },
-                onUpdate = { name, url, summary, category ->
-                    viewModel.updateLinkFields(link.id, name, url, summary, category)
-                }
-            )
+            if (isDesktop) {
+                EditLinkDialog(
+                    link = link,
+                    customCategories = customCategories,
+                    isDark = isDarkTheme,
+                    onDismiss = { linkToEdit = null },
+                    onUpdate = { name, url, summary, category ->
+                        viewModel.updateLinkFields(link.id, name, url, summary, category)
+                    }
+                )
+            } else {
+                EditLinkBottomSheet(
+                    link = link,
+                    customCategories = customCategories,
+                    isDark = isDarkTheme,
+                    onDismiss = { linkToEdit = null },
+                    onUpdate = { name, url, summary, category ->
+                        viewModel.updateLinkFields(link.id, name, url, summary, category)
+                    }
+                )
+            }
         }
 
         if (isCreateGroupDialogOpen) {
-            CreateGroupDialog(
-                isDark = isDarkTheme,
-                onDismiss = { isCreateGroupDialogOpen = false },
-                onAddCustomCategory = { name, emoji, col -> viewModel.addCustomCategory(name, emoji, col) },
-                onSelectCustomCategory = { viewModel.selectCustomCategory(it) }
-            )
+            if (isDesktop) {
+                CreateGroupDialog(
+                    isDark = isDarkTheme,
+                    onDismiss = { isCreateGroupDialogOpen = false },
+                    onAddCustomCategory = { name, emoji, col -> viewModel.addCustomCategory(name, emoji, col) },
+                    onSelectCustomCategory = { viewModel.selectCustomCategory(it) }
+                )
+            } else {
+                CreateGroupBottomSheet(
+                    isDark = isDarkTheme,
+                    onDismiss = { isCreateGroupDialogOpen = false },
+                    onAddCustomCategory = { name, emoji, col -> viewModel.addCustomCategory(name, emoji, col) },
+                    onSelectCustomCategory = { viewModel.selectCustomCategory(it) }
+                )
+            }
+        }
+
+        if (isGoogleAuthPickerOpen) {
+            if (isDesktop) {
+                GoogleAuthDialog(
+                    isDark = isDarkTheme,
+                    viewModel = viewModel,
+                    onDismiss = { isGoogleAuthPickerOpen = false },
+                    onSelectAccount = { email, name, photoUrl ->
+                        viewModel.signInWithGoogleSimulated(email, name, photoUrl)
+                    }
+                )
+            } else {
+                GoogleAuthBottomSheet(
+                    isDark = isDarkTheme,
+                    viewModel = viewModel,
+                    onDismiss = { isGoogleAuthPickerOpen = false },
+                    onSelectAccount = { email, name, photoUrl ->
+                        viewModel.signInWithGoogleSimulated(email, name, photoUrl)
+                    }
+                )
+            }
+        }
+
+        if (isGoogleProfileDetailsOpen) {
+            currentUser?.let { user ->
+                if (isDesktop) {
+                    GoogleProfileDetailsDialog(
+                        user = user,
+                        isDark = isDarkTheme,
+                        onDismiss = { isGoogleProfileDetailsOpen = false },
+                        onSignOut = { viewModel.signOutGoogle() }
+                    )
+                } else {
+                    GoogleProfileDetailsBottomSheet(
+                        user = user,
+                        isDark = isDarkTheme,
+                        onDismiss = { isGoogleProfileDetailsOpen = false },
+                        onSignOut = { viewModel.signOutGoogle() }
+                    )
+                }
+            }
         }
     }
 }
@@ -497,7 +585,9 @@ fun DesktopSidebar(
     onSelectTab: (NavigationTarget) -> Unit,
     onAddClick: () -> Unit,
     onToggleTheme: () -> Unit,
-    isDarkTheme: Boolean
+    isDarkTheme: Boolean,
+    currentUser: com.example.ui.viewmodel.GoogleUserProfile?,
+    onProfileClick: () -> Unit
 ) {
     Surface(
         modifier = Modifier
@@ -542,7 +632,87 @@ fun DesktopSidebar(
                     )
                 }
 
-                Spacer(modifier = Modifier.height(24.dp))
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // Simulated Google user profile widget inside Sidebar
+                if (currentUser != null) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(if (isDarkTheme) Color(0xFF1E1E20) else Color(0xFFF3F4F6))
+                            .border(1.dp, if (isDarkTheme) Color.White.copy(alpha = 0.1f) else Color.Black.copy(alpha = 0.05f), RoundedCornerShape(8.dp))
+                            .clickable { onProfileClick() }
+                            .padding(10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        val avatarColor = when (currentUser.displayName) {
+                            "Kaustav Roy" -> Color(0xFFFBBC05)
+                            "Kaustav Roy (Work)" -> Color(0xFF4285F4)
+                            else -> Color(0xFF34A853)
+                        }
+                        Box(
+                            modifier = Modifier
+                                .size(28.dp)
+                                .clip(CircleShape)
+                                .background(avatarColor),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = currentUser.displayName.take(1),
+                                color = Color.White,
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = currentUser.displayName,
+                                style = MaterialTheme.typography.bodySmall,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                color = MaterialTheme.colorScheme.onBackground
+                            )
+                            Text(
+                                text = currentUser.email,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        Text("👤", fontSize = 14.sp)
+                    }
+                } else {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(40.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(Color.Transparent)
+                            .border(
+                                width = 1.5.dp,
+                                color = if (isDarkTheme) Color.White.copy(alpha = 0.15f) else Color.Black.copy(alpha = 0.12f),
+                                shape = RoundedCornerShape(8.dp)
+                            )
+                            .clickable { onProfileClick() },
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center
+                    ) {
+                        Text("🔑", fontSize = 14.sp)
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "Sign in",
+                            style = MaterialTheme.typography.bodySmall,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onBackground
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(20.dp))
 
                 // CTA Plus save
                 Button(
@@ -727,45 +897,6 @@ fun DesktopTopBar(
                     focusManager.clearFocus()
                 })
             )
-
-            Spacer(modifier = Modifier.width(16.dp))
-
-            // Ask Mode toggle
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(if (isAskMode) Color(0xFFFBBF24).copy(alpha = 0.12f) else Color.Transparent)
-                    .border(
-                        1.dp,
-                        if (isAskMode) Color(0xFFFBBF24) else MaterialTheme.colorScheme.outline,
-                        RoundedCornerShape(8.dp)
-                    )
-                    .clickable { onToggleAskMode() }
-                    .padding(horizontal = 12.dp, vertical = 6.dp)
-            ) {
-                Text(
-                    text = "Ask AI (Gemini)",
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    color = if (isAskMode) Color(0xFFD97706) else MaterialTheme.colorScheme.onBackground
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                if (isSearchingAI) {
-                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-                } else {
-                    Icon(
-                        imageVector = Icons.Default.Refresh,
-                        contentDescription = "Search AI",
-                        tint = if (isAskMode) Color(0xFFD97706) else MaterialTheme.colorScheme.onBackground,
-                        modifier = Modifier
-                            .size(16.dp)
-                            .clickable {
-                                if (isAskMode) onTriggerSearch()
-                            }
-                    )
-                }
-            }
         }
 
         // Triage Inbox Filter (Anti-Graveyard toggle)
@@ -845,13 +976,14 @@ fun MobileHeader(
     currentTab: NavigationTarget,
     onToggleTheme: () -> Unit,
     isDark: Boolean,
-    onSelectTab: (NavigationTarget) -> Unit
+    onSelectTab: (NavigationTarget) -> Unit,
+    currentUser: com.example.ui.viewmodel.GoogleUserProfile?,
+    onProfileClick: () -> Unit
 ) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .background(if (isDark) Color(0xFF131314) else Color.White)
-            .statusBarsPadding()
     ) {
         Row(
             modifier = Modifier
@@ -902,13 +1034,58 @@ fun MobileHeader(
                     )
                 }
 
-                Spacer(modifier = Modifier.width(4.dp))
+                Spacer(modifier = Modifier.width(2.dp))
 
                 IconButton(onClick = onToggleTheme) {
                     Text(
                         text = if (isDark) "☀️" else "🌙",
                         fontSize = 20.sp
                     )
+                }
+
+                Spacer(modifier = Modifier.width(6.dp))
+
+                // Profile Avatar Widget
+                Box(
+                    modifier = Modifier
+                        .size(34.dp)
+                        .clip(CircleShape)
+                        .background(
+                            if (currentUser != null) {
+                                when (currentUser.displayName) {
+                                    "Kaustav Roy" -> Color(0xFFFBBC05)
+                                    "Kaustav Roy (Work)" -> Color(0xFF4285F4)
+                                    else -> Color(0xFF34A853)
+                                }
+                            } else {
+                                if (isDark) Color(0xFF1E1E20) else Color(0xFFF3F4F6)
+                            }
+                        )
+                        .border(
+                            1.5.dp,
+                            if (currentUser != null) {
+                                if (isDark) Color.White else Color.Black
+                            } else {
+                                if (isDark) Color.White.copy(alpha = 0.2f) else Color.Black.copy(alpha = 0.15f)
+                            },
+                            CircleShape
+                        )
+                        .clickable { onProfileClick() },
+                    contentAlignment = Alignment.Center
+                ) {
+                    if (currentUser != null) {
+                        Text(
+                            text = currentUser.displayName.take(1),
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
+                        )
+                    } else {
+                        Text(
+                            text = "🔑",
+                            fontSize = 14.sp
+                        )
+                    }
                 }
             }
         }
@@ -1098,42 +1275,9 @@ fun MobileSearchBarSection(
                 ),
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
                 keyboardActions = KeyboardActions(onSearch = {
-                    if (isAskMode) {
-                        onTriggerSearch()
-                    }
                     focusManager.clearFocus()
                 })
             )
-
-            // AI Toggle (aligned perfectly with search component height)
-            Box(
-                modifier = Modifier
-                    .height(48.dp)
-                    .neoBrutalShadow(isDark, cornerRadiusDp = 8f)
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(if (isAskMode) Color(0xFFFBBF24) else if (isDark) Color(0xFF1E1E20) else Color.White)
-                    .border(
-                        2.dp,
-                        if (isDark) Color.White else Color.Black,
-                        RoundedCornerShape(8.dp)
-                    )
-                    .clickable { onToggleAskMode() }
-                    .padding(horizontal = 12.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        text = "AI Ask ✨",
-                        style = MaterialTheme.typography.labelMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = if (isAskMode) Color.Black else if (isDark) Color.White else Color.Black
-                    )
-                    if (isSearchingAI) {
-                        Spacer(modifier = Modifier.width(4.dp))
-                        CircularProgressIndicator(modifier = Modifier.size(12.dp), strokeWidth = 1.5.dp, color = if (isAskMode) Color.Black else MaterialTheme.colorScheme.primary)
-                    }
-                }
-            }
         }
     }
 }
@@ -1176,7 +1320,7 @@ fun MobileLinkList(
 
 // --- ELEVATED CUSTOM ITEM CARD COMPONENT ---
 
-@OptIn(ExperimentalFoundationApi::class)
+@OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun LinkCardItem(
     link: LinkRecord,
@@ -1310,50 +1454,263 @@ fun LinkCardItem(
                                     modifier = Modifier.size(18.dp)
                                 )
                             }
-                            DropdownMenu(
-                                expanded = isMenuExpanded,
-                                onDismissRequest = { isMenuExpanded = false }
-                            ) {
-                                DropdownMenuItem(
-                                    text = { Text("Open Link 🌐") },
-                                    onClick = {
-                                        isMenuExpanded = false
-                                        try {
-                                            val i = Intent(Intent.ACTION_VIEW, Uri.parse(link.url))
-                                            context.startActivity(i)
-                                            onInteract(link)
-                                        } catch (e: Exception) {
-                                            Toast.makeText(context, "Invalid URL format", Toast.LENGTH_SHORT).show()
+                            if (isMenuExpanded) {
+                                if (isMobile) {
+                                    ModalBottomSheet(
+                                        onDismissRequest = { isMenuExpanded = false },
+                                        dragHandle = {}
+                                    ) {
+                                        Column(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(20.dp),
+                                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
+                                            Spacer(modifier = Modifier.height(16.dp))
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.SpaceBetween,
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Text(
+                                                    text = "Link Options 🔗",
+                                                    style = MaterialTheme.typography.titleMedium,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = MaterialTheme.colorScheme.onSurface
+                                                )
+                                                IconButton(onClick = { isMenuExpanded = false }) {
+                                                    Icon(
+                                                        imageVector = Icons.Default.Close,
+                                                        contentDescription = "Close",
+                                                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                                    )
+                                                }
+                                            }
+
+                                            Spacer(modifier = Modifier.height(8.dp))
+
+                                            // Item 1: Open Link
+                                            Row(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .clip(RoundedCornerShape(8.dp))
+                                                    .clickable {
+                                                        isMenuExpanded = false
+                                                        try {
+                                                            val i = Intent(Intent.ACTION_VIEW, Uri.parse(link.url))
+                                                            context.startActivity(i)
+                                                            onInteract(link)
+                                                        } catch (e: Exception) {
+                                                            Toast.makeText(context, "Invalid URL format", Toast.LENGTH_SHORT).show()
+                                                        }
+                                                    }
+                                                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                            ) {
+                                                Text("🌐", fontSize = 18.sp)
+                                                Text(
+                                                    text = "Open Link Address",
+                                                    style = MaterialTheme.typography.bodyMedium,
+                                                    fontWeight = FontWeight.SemiBold
+                                                )
+                                            }
+
+                                            // Item 2: Toggle Read state
+                                            val readLabel = if (link.readState == "unread") "Mark as Reading" else if (link.readState == "reading") "Mark as Done" else "Mark as Unread"
+                                            val readEmoji = if (link.readState == "unread") "📖" else if (link.readState == "reading") "✅" else "📚"
+                                            Row(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .clip(RoundedCornerShape(8.dp))
+                                                    .clickable {
+                                                        isMenuExpanded = false
+                                                        onCycleRead(link)
+                                                    }
+                                                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                            ) {
+                                                Text(readEmoji, fontSize = 18.sp)
+                                                Text(
+                                                    text = readLabel,
+                                                    style = MaterialTheme.typography.bodyMedium,
+                                                    fontWeight = FontWeight.SemiBold
+                                                )
+                                            }
+
+                                            // Item 3: Edit Details
+                                            Row(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .clip(RoundedCornerShape(8.dp))
+                                                    .clickable {
+                                                        isMenuExpanded = false
+                                                        onEdit()
+                                                    }
+                                                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                            ) {
+                                                Text("✏️", fontSize = 18.sp)
+                                                Text(
+                                                    text = "Edit Link Details",
+                                                    style = MaterialTheme.typography.bodyMedium,
+                                                    fontWeight = FontWeight.SemiBold
+                                                )
+                                            }
+
+                                            HorizontalDivider(color = (if (isDark) Color.White else Color.Black).copy(alpha = 0.1f))
+
+                                            // Item 4: Delete Link (Red)
+                                            Row(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .clip(RoundedCornerShape(8.dp))
+                                                    .clickable {
+                                                        isMenuExpanded = false
+                                                        onDelete()
+                                                    }
+                                                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                            ) {
+                                                Text("🗑️", fontSize = 18.sp)
+                                                Text(
+                                                    text = "Delete Link",
+                                                    style = MaterialTheme.typography.bodyMedium,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = MaterialTheme.colorScheme.error
+                                                )
+                                            }
                                         }
                                     }
-                                )
-                                DropdownMenuItem(
-                                    text = { Text("Mark Unread") },
-                                    onClick = {
-                                        isMenuExpanded = false
-                                        onCycleRead(link) // Or custom cycle setting
+                                } else {
+                                    Dialog(onDismissRequest = { isMenuExpanded = false }) {
+                                        Surface(
+                                            modifier = Modifier
+                                                .width(300.dp)
+                                                .clip(RoundedCornerShape(12.dp))
+                                                .border(
+                                                    width = 2.dp,
+                                                    color = if (isDark) Color(0xFFF1F1F1) else Color(0xFF0D0D0D),
+                                                    shape = RoundedCornerShape(12.dp)
+                                                ),
+                                            color = MaterialTheme.colorScheme.surface,
+                                            shadowElevation = 8.dp
+                                        ) {
+                                            Column(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .padding(16.dp),
+                                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                                            ) {
+                                                Text(
+                                                    text = "Link Options 🔗",
+                                                    style = MaterialTheme.typography.titleMedium,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = MaterialTheme.colorScheme.onSurface,
+                                                    modifier = Modifier.padding(bottom = 8.dp)
+                                                )
+
+                                                // Item 1: Open Link
+                                                Row(
+                                                    modifier = Modifier
+                                                        .fillMaxWidth()
+                                                        .clip(RoundedCornerShape(8.dp))
+                                                        .clickable {
+                                                            isMenuExpanded = false
+                                                            try {
+                                                                val i = Intent(Intent.ACTION_VIEW, Uri.parse(link.url))
+                                                                context.startActivity(i)
+                                                                onInteract(link)
+                                                            } catch (e: Exception) {
+                                                                Toast.makeText(context, "Invalid URL format", Toast.LENGTH_SHORT).show()
+                                                            }
+                                                        }
+                                                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                                ) {
+                                                    Text("🌐", fontSize = 18.sp)
+                                                    Text(
+                                                        text = "Open Link Address",
+                                                        style = MaterialTheme.typography.bodyMedium,
+                                                        fontWeight = FontWeight.SemiBold
+                                                    )
+                                                }
+
+                                                // Item 2: Toggle Read state
+                                                val readLabel = if (link.readState == "unread") "Mark as Reading" else if (link.readState == "reading") "Mark as Done" else "Mark as Unread"
+                                                val readEmoji = if (link.readState == "unread") "📖" else if (link.readState == "reading") "✅" else "📚"
+                                                Row(
+                                                    modifier = Modifier
+                                                        .fillMaxWidth()
+                                                        .clip(RoundedCornerShape(8.dp))
+                                                        .clickable {
+                                                            isMenuExpanded = false
+                                                            onCycleRead(link)
+                                                        }
+                                                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                                ) {
+                                                    Text(readEmoji, fontSize = 18.sp)
+                                                    Text(
+                                                        text = readLabel,
+                                                        style = MaterialTheme.typography.bodyMedium,
+                                                        fontWeight = FontWeight.SemiBold
+                                                    )
+                                                }
+
+                                                // Item 3: Edit Details
+                                                Row(
+                                                    modifier = Modifier
+                                                        .fillMaxWidth()
+                                                        .clip(RoundedCornerShape(8.dp))
+                                                        .clickable {
+                                                            isMenuExpanded = false
+                                                            onEdit()
+                                                        }
+                                                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                                ) {
+                                                    Text("✏️", fontSize = 18.sp)
+                                                    Text(
+                                                        text = "Edit Link Details",
+                                                        style = MaterialTheme.typography.bodyMedium,
+                                                        fontWeight = FontWeight.SemiBold
+                                                    )
+                                                }
+
+                                                HorizontalDivider(color = (if (isDark) Color.White else Color.Black).copy(alpha = 0.1f))
+
+                                                // Item 4: Delete Link (Red)
+                                                Row(
+                                                    modifier = Modifier
+                                                        .fillMaxWidth()
+                                                        .clip(RoundedCornerShape(8.dp))
+                                                        .clickable {
+                                                            isMenuExpanded = false
+                                                            onDelete()
+                                                        }
+                                                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                                ) {
+                                                    Text("🗑️", fontSize = 18.sp)
+                                                    Text(
+                                                        text = "Delete Link",
+                                                        style = MaterialTheme.typography.bodyMedium,
+                                                        fontWeight = FontWeight.Bold,
+                                                        color = MaterialTheme.colorScheme.error
+                                                    )
+                                                }
+                                            }
+                                        }
                                     }
-                                )
-                                DropdownMenuItem(
-                                    text = { Text("Edit Link ✏️") },
-                                    onClick = {
-                                        isMenuExpanded = false
-                                        onEdit()
-                                    }
-                                )
-                                DropdownMenuItem(
-                                    text = {
-                                        Text(
-                                            "Delete Link 🗑️",
-                                            color = MaterialTheme.colorScheme.error,
-                                            fontWeight = FontWeight.Bold
-                                        )
-                                    },
-                                    onClick = {
-                                        isMenuExpanded = false
-                                        onDelete()
-                                    }
-                                )
+                                }
                             }
                         }
                     }
@@ -1828,6 +2185,7 @@ fun AddLinkFormContent(
     var selectedEmoji by remember { mutableStateOf("📂") }
     var selectedColorHex by remember { mutableStateOf("#9CA3AF") }
     var newCustomCategoryInput by remember { mutableStateOf("") }
+    var showCreateFields by remember { mutableStateOf(false) }
 
     var showConfirmationDialog by remember { mutableStateOf(false) }
 
@@ -1874,20 +2232,41 @@ fun AddLinkFormContent(
     Column(
         modifier = Modifier
             .fillMaxWidth()
+            .fillMaxHeight()
             .verticalScroll(scrollState)
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
+        Spacer(modifier = Modifier.height(16.dp))
+
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                text = "Save New Link URL",
-                style = MaterialTheme.typography.headlineMedium,
-                fontWeight = FontWeight.Bold
+                text = "Save New Link URL 🔗",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurface
             )
+            
+            IconButton(
+                onClick = onDismiss
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Close,
+                    contentDescription = "Close",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.End,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
             // Clipboard Paste helper triggers instant parsing
             Button(
                 onClick = {
@@ -1963,61 +2342,82 @@ fun AddLinkFormContent(
                         )
                     }
                 }
-            }
 
-            Spacer(modifier = Modifier.height(16.dp))
-
-            Text(
-                text = "New Bucket / Category Name:",
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = FontWeight.Bold
-            )
-            Spacer(modifier = Modifier.height(4.dp))
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                OutlinedTextField(
-                    value = newCustomCategoryInput,
-                    onValueChange = { newCustomCategoryInput = it },
+                // Add special "+ New Group ➕" option at the end of categories
+                val isNewGroupSelected = showCreateFields
+                Box(
                     modifier = Modifier
-                        .weight(1f)
-                        .height(56.dp),
-                    placeholder = { Text("e.g. recipes, design, tech") },
-                    singleLine = true,
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = MaterialTheme.colorScheme.primary
-                    )
-                )
-
-                Button(
-                    onClick = {
-                        val trimmed = newCustomCategoryInput.trim().lowercase()
-                        if (trimmed.isNotBlank()) {
-                            onAddCustomCategory(trimmed, selectedEmoji, selectedColorHex)
-                            onCategorySelect(trimmed)
-                            newCustomCategoryInput = ""
-                        }
-                    },
-                    modifier = Modifier.height(56.dp),
-                    shape = RoundedCornerShape(8.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                        .clip(RoundedCornerShape(20.dp))
+                        .background(if (isNewGroupSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.primary.copy(alpha = 0.08f))
+                        .border(1.dp, MaterialTheme.colorScheme.primary, RoundedCornerShape(20.dp))
+                        .clickable { showCreateFields = !showCreateFields }
+                        .padding(horizontal = 14.dp, vertical = 8.dp)
                 ) {
-                    Text("Add")
+                    Text(
+                        text = "+ New Group ➕",
+                        color = if (isNewGroupSelected) Color.White else MaterialTheme.colorScheme.primary,
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold
+                    )
                 }
             }
 
-            Spacer(modifier = Modifier.height(12.dp))
+            if (showCreateFields) {
+                Spacer(modifier = Modifier.height(16.dp))
 
-            CustomColorAndEmojiSelector(
-                selectedEmoji = selectedEmoji,
-                onEmojiChange = { selectedEmoji = it },
-                selectedColorHex = selectedColorHex,
-                onColorHexChange = { selectedColorHex = it },
-                isDark = isDark
-            )
+                Text(
+                    text = "New Bucket / Category Name:",
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Bold
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    OutlinedTextField(
+                        value = newCustomCategoryInput,
+                        onValueChange = { newCustomCategoryInput = it },
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(56.dp),
+                        placeholder = { Text("e.g. recipes, design, tech") },
+                        singleLine = true,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = MaterialTheme.colorScheme.primary
+                        )
+                    )
+
+                    Button(
+                        onClick = {
+                            val trimmed = newCustomCategoryInput.trim().lowercase()
+                            if (trimmed.isNotBlank()) {
+                                onAddCustomCategory(trimmed, selectedEmoji, selectedColorHex)
+                                onCategorySelect(trimmed)
+                                newCustomCategoryInput = ""
+                                showCreateFields = false
+                            }
+                        },
+                        modifier = Modifier.height(56.dp),
+                        shape = RoundedCornerShape(8.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                    ) {
+                        Text("Add")
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                CustomColorAndEmojiSelector(
+                    selectedEmoji = selectedEmoji,
+                    onEmojiChange = { selectedEmoji = it },
+                    selectedColorHex = selectedColorHex,
+                    onColorHexChange = { selectedColorHex = it },
+                    isDark = isDark
+                )
+            }
         }
 
         Spacer(modifier = Modifier.height(8.dp))
@@ -2025,7 +2425,7 @@ fun AddLinkFormContent(
         Button(
             onClick = {
                 val trimmed = newCustomCategoryInput.trim().lowercase()
-                if (trimmed.isNotBlank()) {
+                if (showCreateFields && trimmed.isNotBlank()) {
                     onAddCustomCategory(trimmed, selectedEmoji, selectedColorHex)
                     onCategorySelect(trimmed)
                 }
@@ -2121,7 +2521,7 @@ fun AddLinkDialog(
 }
 
 @Composable
-fun EditLinkDialog(
+fun EditLinkFormContent(
     link: LinkRecord,
     customCategories: List<String>,
     isDark: Boolean,
@@ -2134,7 +2534,187 @@ fun EditLinkDialog(
     var selectedCategory by remember { mutableStateOf(link.category) }
 
     val allCategories = listOf("jobs", "socials", "videos", "articles") + customCategories + listOf("uncategorized")
+    val scrollState = rememberScrollState()
 
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .fillMaxHeight()
+            .verticalScroll(scrollState)
+            .padding(20.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // Cross Close Button Row
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "Edit Link Details ✏️",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            
+            IconButton(
+                onClick = onDismiss
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Close,
+                    contentDescription = "Close",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+
+        OutlinedTextField(
+            value = name,
+            onValueChange = { name = it },
+            label = { Text("Title / Name") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedBorderColor = MaterialTheme.colorScheme.primary
+            )
+        )
+
+        OutlinedTextField(
+            value = url,
+            onValueChange = { url = it },
+            label = { Text("URL / Link") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedBorderColor = MaterialTheme.colorScheme.primary
+            )
+        )
+
+        OutlinedTextField(
+            value = summary,
+            onValueChange = { summary = it },
+            label = { Text("Description / Summary") },
+            maxLines = 4,
+            modifier = Modifier.fillMaxWidth(),
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedBorderColor = MaterialTheme.colorScheme.primary
+            )
+        )
+
+        // Category Selector
+        Column {
+            Text(
+                text = "Category (Group):",
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+
+            @OptIn(ExperimentalLayoutApi::class)
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                allCategories.distinct().forEach { cat ->
+                    val isActive = selectedCategory == cat
+                    val col = CategoryColors.getAccent(cat, isDark)
+                    val emoji = CategoryColors.getEmoji(cat)
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(if (isActive) col else Color.Transparent)
+                            .border(2.dp, col, RoundedCornerShape(6.dp))
+                            .clickable { selectedCategory = cat }
+                            .padding(horizontal = 12.dp, vertical = 6.dp)
+                    ) {
+                        Text(
+                            text = "$emoji ${cat.uppercase()}",
+                            color = if (isActive) Color.White else col,
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(4.dp))
+
+        // Actions
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.End,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Button(
+                onClick = onDismiss,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Color.Transparent,
+                    contentColor = MaterialTheme.colorScheme.onSurfaceVariant
+                ),
+                modifier = Modifier.padding(end = 8.dp)
+            ) {
+                Text("Cancel", fontWeight = FontWeight.Bold)
+            }
+
+            Button(
+                onClick = {
+                    if (name.isNotBlank() && url.isNotBlank()) {
+                        onUpdate(name, url, summary, selectedCategory)
+                        onDismiss()
+                    }
+                },
+                shape = RoundedCornerShape(6.dp),
+                border = BorderStroke(2.dp, if (isDark) Color(0xFFF1F1F1) else Color(0xFF0D0D0D)),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.primary,
+                    contentColor = MaterialTheme.colorScheme.onPrimary
+                )
+            ) {
+                Text("Save Changes", fontWeight = FontWeight.Bold)
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun EditLinkBottomSheet(
+    link: LinkRecord,
+    customCategories: List<String>,
+    isDark: Boolean,
+    onDismiss: () -> Unit,
+    onUpdate: (name: String, url: String, summary: String, category: String) -> Unit
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        dragHandle = {}
+    ) {
+        EditLinkFormContent(
+            link = link,
+            customCategories = customCategories,
+            isDark = isDark,
+            onDismiss = onDismiss,
+            onUpdate = onUpdate
+        )
+    }
+}
+
+@Composable
+fun EditLinkDialog(
+    link: LinkRecord,
+    customCategories: List<String>,
+    isDark: Boolean,
+    onDismiss: () -> Unit,
+    onUpdate: (name: String, url: String, summary: String, category: String) -> Unit
+) {
     Dialog(onDismissRequest = onDismiss) {
         Surface(
             modifier = Modifier
@@ -2148,131 +2728,140 @@ fun EditLinkDialog(
             color = MaterialTheme.colorScheme.surface,
             tonalElevation = 5.dp
         ) {
-            val scrollState = rememberScrollState()
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .verticalScroll(scrollState)
-                    .padding(20.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
-            ) {
-                Text(
-                    text = "Edit Link Details ✏️",
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onSurface
+            EditLinkFormContent(
+                link = link,
+                customCategories = customCategories,
+                isDark = isDark,
+                onDismiss = onDismiss,
+                onUpdate = onUpdate
+            )
+        }
+    }
+}
+
+@Composable
+fun CreateGroupFormContent(
+    isDark: Boolean,
+    onDismiss: () -> Unit,
+    onAddCustomCategory: (String, String, String) -> Unit,
+    onSelectCustomCategory: (String?) -> Unit
+) {
+    var groupName by remember { mutableStateOf("") }
+    var selectedEmoji by remember { mutableStateOf("📂") }
+    var selectedColorHex by remember { mutableStateOf("#9CA3AF") }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(20.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        Spacer(modifier = Modifier.height(16.dp))
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "Create New Group ➕",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+
+            IconButton(onClick = onDismiss) {
+                Icon(
+                    imageVector = Icons.Default.Close,
+                    contentDescription = "Close",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-
-                OutlinedTextField(
-                    value = name,
-                    onValueChange = { name = it },
-                    label = { Text("Title / Name") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = MaterialTheme.colorScheme.primary
-                    )
-                )
-
-                OutlinedTextField(
-                    value = url,
-                    onValueChange = { url = it },
-                    label = { Text("URL / Link") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = MaterialTheme.colorScheme.primary
-                    )
-                )
-
-                OutlinedTextField(
-                    value = summary,
-                    onValueChange = { summary = it },
-                    label = { Text("Description / Summary") },
-                    maxLines = 4,
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = MaterialTheme.colorScheme.primary
-                    )
-                )
-
-                // Category Selector
-                Column {
-                    Text(
-                        text = "Category (Group):",
-                        style = MaterialTheme.typography.bodyMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    @OptIn(ExperimentalLayoutApi::class)
-                    FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        allCategories.distinct().forEach { cat ->
-                            val isActive = selectedCategory == cat
-                            val col = CategoryColors.getAccent(cat, isDark)
-                            val emoji = CategoryColors.getEmoji(cat)
-                            Box(
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(6.dp))
-                                    .background(if (isActive) col else Color.Transparent)
-                                    .border(2.dp, col, RoundedCornerShape(6.dp))
-                                    .clickable { selectedCategory = cat }
-                                    .padding(horizontal = 12.dp, vertical = 6.dp)
-                            ) {
-                                Text(
-                                    text = "$emoji ${cat.uppercase()}",
-                                    color = if (isActive) Color.White else col,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    fontWeight = FontWeight.Bold
-                                )
-                            }
-                        }
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(4.dp))
-
-                // Actions
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.End,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Button(
-                        onClick = onDismiss,
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = Color.Transparent,
-                            contentColor = MaterialTheme.colorScheme.onSurfaceVariant
-                        ),
-                        modifier = Modifier.padding(end = 8.dp)
-                    ) {
-                        Text("Cancel", fontWeight = FontWeight.Bold)
-                    }
-
-                    Button(
-                        onClick = {
-                            if (name.isNotBlank() && url.isNotBlank()) {
-                                onUpdate(name, url, summary, selectedCategory)
-                                onDismiss()
-                            }
-                        },
-                        shape = RoundedCornerShape(6.dp),
-                        border = BorderStroke(2.dp, if (isDark) Color(0xFFF1F1F1) else Color(0xFF0D0D0D)),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = MaterialTheme.colorScheme.primary,
-                            contentColor = MaterialTheme.colorScheme.onPrimary
-                        )
-                    ) {
-                        Text("Save Changes", fontWeight = FontWeight.Bold)
-                    }
-                }
             }
         }
+
+        OutlinedTextField(
+            value = groupName,
+            onValueChange = { groupName = it },
+            label = { Text("Group Name / Tab Name") },
+            singleLine = true,
+            placeholder = { Text("e.g. Design, Coding, Cooking") },
+            modifier = Modifier.fillMaxWidth().testTag("new_group_name_input"),
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedBorderColor = MaterialTheme.colorScheme.primary
+            )
+        )
+
+        CustomColorAndEmojiSelector(
+            selectedEmoji = selectedEmoji,
+            onEmojiChange = { selectedEmoji = it },
+            selectedColorHex = selectedColorHex,
+            onColorHexChange = { selectedColorHex = it },
+            isDark = isDark
+        )
+
+        Spacer(modifier = Modifier.height(4.dp))
+
+        // Actions Button Row
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.End,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Button(
+                onClick = onDismiss,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Color.Transparent,
+                    contentColor = MaterialTheme.colorScheme.onSurfaceVariant
+                ),
+                modifier = Modifier.padding(end = 8.dp)
+            ) {
+                Text("Cancel", fontWeight = FontWeight.Bold)
+            }
+
+            Button(
+                onClick = {
+                    val trimmed = groupName.trim().lowercase()
+                    if (trimmed.isNotBlank()) {
+                        onAddCustomCategory(trimmed, selectedEmoji, selectedColorHex)
+                        onSelectCustomCategory(trimmed)
+                        onDismiss()
+                    }
+                },
+                shape = RoundedCornerShape(6.dp),
+                enabled = groupName.isNotBlank(),
+                border = BorderStroke(2.dp, if (isDark) Color(0xFFF1F1F1) else Color(0xFF0D0D0D)),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.primary,
+                    contentColor = MaterialTheme.colorScheme.onPrimary
+                )
+            ) {
+                Text("Create Group", fontWeight = FontWeight.Bold)
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun CreateGroupBottomSheet(
+    isDark: Boolean,
+    onDismiss: () -> Unit,
+    onAddCustomCategory: (String, String, String) -> Unit,
+    onSelectCustomCategory: (String?) -> Unit
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        dragHandle = {}
+    ) {
+        CreateGroupFormContent(
+            isDark = isDark,
+            onDismiss = onDismiss,
+            onAddCustomCategory = onAddCustomCategory,
+            onSelectCustomCategory = onSelectCustomCategory
+        )
     }
 }
 
@@ -2283,10 +2872,6 @@ fun CreateGroupDialog(
     onAddCustomCategory: (String, String, String) -> Unit,
     onSelectCustomCategory: (String?) -> Unit
 ) {
-    var groupName by remember { mutableStateOf("") }
-    var selectedEmoji by remember { mutableStateOf("📂") }
-    var selectedColorHex by remember { mutableStateOf("#9CA3AF") }
-
     Dialog(onDismissRequest = onDismiss) {
         Surface(
             modifier = Modifier
@@ -2300,79 +2885,12 @@ fun CreateGroupDialog(
             color = MaterialTheme.colorScheme.surface,
             tonalElevation = 5.dp
         ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(20.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
-            ) {
-                Text(
-                    text = "Create New Group ➕",
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-
-                OutlinedTextField(
-                    value = groupName,
-                    onValueChange = { groupName = it },
-                    label = { Text("Group Name / Tab Name") },
-                    singleLine = true,
-                    placeholder = { Text("e.g. Design, Coding, Cooking") },
-                    modifier = Modifier.fillMaxWidth().testTag("new_group_name_input"),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = MaterialTheme.colorScheme.primary
-                    )
-                )
-
-                CustomColorAndEmojiSelector(
-                    selectedEmoji = selectedEmoji,
-                    onEmojiChange = { selectedEmoji = it },
-                    selectedColorHex = selectedColorHex,
-                    onColorHexChange = { selectedColorHex = it },
-                    isDark = isDark
-                )
-
-                Spacer(modifier = Modifier.height(4.dp))
-
-                // Actions Button Row
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.End,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Button(
-                        onClick = onDismiss,
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = Color.Transparent,
-                            contentColor = MaterialTheme.colorScheme.onSurfaceVariant
-                        ),
-                        modifier = Modifier.padding(end = 8.dp)
-                    ) {
-                        Text("Cancel", fontWeight = FontWeight.Bold)
-                    }
-
-                    Button(
-                        onClick = {
-                            val trimmed = groupName.trim().lowercase()
-                            if (trimmed.isNotBlank()) {
-                                onAddCustomCategory(trimmed, selectedEmoji, selectedColorHex)
-                                onSelectCustomCategory(trimmed)
-                                onDismiss()
-                            }
-                        },
-                        shape = RoundedCornerShape(6.dp),
-                        enabled = groupName.isNotBlank(),
-                        border = BorderStroke(2.dp, if (isDark) Color(0xFFF1F1F1) else Color(0xFF0D0D0D)),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = MaterialTheme.colorScheme.primary,
-                            contentColor = MaterialTheme.colorScheme.onPrimary
-                        )
-                    ) {
-                        Text("Create Group", fontWeight = FontWeight.Bold)
-                    }
-                }
-            }
+            CreateGroupFormContent(
+                isDark = isDark,
+                onDismiss = onDismiss,
+                onAddCustomCategory = onAddCustomCategory,
+                onSelectCustomCategory = onSelectCustomCategory
+            )
         }
     }
 }
@@ -2639,6 +3157,545 @@ fun SimpleHuePicker(
                     .clip(CircleShape)
                     .border(2.5.dp, Color.White, CircleShape)
                     .background(Color.Transparent)
+            )
+        }
+    }
+}
+
+// -------------------------------------------------------------
+// --- MOCK/SIMULATED GOOGLE AUTH COMPONENTS (OPTION B) ---
+// -------------------------------------------------------------
+
+@Composable
+fun GoogleLogoText(modifier: Modifier = Modifier) {
+    Row(
+        modifier = modifier,
+        horizontalArrangement = Arrangement.spacedBy(1.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text("G", color = Color(0xFF4285F4), fontWeight = FontWeight.ExtraBold, fontSize = 20.sp, letterSpacing = (-0.5).sp)
+        Text("o", color = Color(0xFFEA4335), fontWeight = FontWeight.ExtraBold, fontSize = 20.sp, letterSpacing = (-0.5).sp)
+        Text("o", color = Color(0xFFFBBC05), fontWeight = FontWeight.ExtraBold, fontSize = 20.sp, letterSpacing = (-0.5).sp)
+        Text("g", color = Color(0xFF4285F4), fontWeight = FontWeight.ExtraBold, fontSize = 20.sp, letterSpacing = (-0.5).sp)
+        Text("l", color = Color(0xFF34A853), fontWeight = FontWeight.ExtraBold, fontSize = 20.sp, letterSpacing = (-0.5).sp)
+        Text("e", color = Color(0xFFEA4335), fontWeight = FontWeight.ExtraBold, fontSize = 20.sp, letterSpacing = (-0.5).sp)
+    }
+}
+
+@Composable
+fun GoogleAccountSelectionList(
+    onSelectAccount: (email: String, name: String, photoUrl: String?) -> Unit,
+    isDark: Boolean
+) {
+    val accounts = listOf(
+        Triple("kaustavr25@gmail.com", "Kaustav Roy", "https://via.placeholder.com/150/FBBC05/FFFFFF?text=KR"),
+        Triple("work.kaustav@gmail.com", "Kaustav Roy (Work)", "https://via.placeholder.com/150/4285F4/FFFFFF?text=KW"),
+        Triple("guest.bee@gmail.com", "LinkHive Guest", "https://via.placeholder.com/150/34A853/FFFFFF?text=LG")
+    )
+    
+    var signingInAccount by remember { mutableStateOf<String?>(null) }
+    
+    if (signingInAccount != null) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            CircularProgressIndicator(
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(36.dp)
+            )
+            Text(
+                "Signing in via Google services...",
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        LaunchedEffect(signingInAccount) {
+            kotlinx.coroutines.delay(1000)
+            val acc = accounts.find { it.first == signingInAccount }
+            if (acc != null) {
+                onSelectAccount(acc.first, acc.second, acc.third)
+            }
+            signingInAccount = null
+        }
+    } else {
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            accounts.forEach { (email, name, photo) ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(if (isDark) Color(0xFF1E1E20) else Color(0xFFF3F4F6))
+                        .border(
+                            1.dp,
+                            if (isDark) Color.White.copy(alpha = 0.1f) else Color.Black.copy(alpha = 0.05f),
+                            RoundedCornerShape(12.dp)
+                        )
+                        .clickable { signingInAccount = email }
+                        .padding(14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(14.dp)
+                ) {
+                    val avatarColor = when (name) {
+                        "Kaustav Roy" -> Color(0xFFFBBC05)
+                        "Kaustav Roy (Work)" -> Color(0xFF4285F4)
+                        else -> Color(0xFF34A853)
+                    }
+
+                    Box(
+                        modifier = Modifier
+                            .size(38.dp)
+                            .clip(CircleShape)
+                            .background(avatarColor),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = name.take(1),
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
+                        )
+                    }
+                    
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = name,
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = email,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    
+                    Text("🔑", fontSize = 16.sp)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun GoogleAuthFormContent(
+    isDark: Boolean,
+    viewModel: LinkViewModel,
+    onDismiss: () -> Unit,
+    onSelectAccount: (email: String, name: String, photoUrl: String?) -> Unit
+) {
+    val context = LocalContext.current
+    val isFirebaseAvailable = viewModel.isFirebaseAvailable()
+    val webClientId = viewModel.getGoogleWebClientId()
+
+    // Activity launcher for real Google Play Services Sign-In
+    val googleSignInLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val task = GoogleSignIn.getSignedInAccountFromIntent(result.data)
+        try {
+            val account = task.getResult(ApiException::class.java)
+            val idToken = account?.idToken
+            if (idToken != null) {
+                viewModel.signInWithFirebaseGoogleToken(idToken) { success, errMsg ->
+                    if (success) {
+                        viewModel.showToast("Firebase Authenticated Successfully! 🎉")
+                        onDismiss()
+                    } else {
+                        viewModel.showToast("Firebase Exchanging Token Failed: $errMsg")
+                    }
+                }
+            } else {
+                viewModel.showToast("No ID Token loaded. Configure Web Client ID in the Secrets panel.")
+            }
+        } catch (e: Exception) {
+            viewModel.showToast("Google Sign-In Cancelled or Misconfigured: ${e.message}")
+        }
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(24.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        Spacer(modifier = Modifier.height(12.dp))
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                GoogleLogoText()
+                Text(
+                    text = "Sign in to continue to LinkHive Workspace",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
+            IconButton(onClick = onDismiss) {
+                Icon(
+                    imageVector = Icons.Default.Close,
+                    contentDescription = "Close",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+
+        HorizontalDivider(color = (if (isDark) Color.White else Color.Black).copy(alpha = 0.08f))
+
+        // Production Real Google Sign-In Trigger Card
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(
+                containerColor = if (isDark) Color(0xFF1E1E20) else Color(0xFFF3F4F6)
+            ),
+            shape = RoundedCornerShape(12.dp),
+            border = BorderStroke(
+                1.dp,
+                if (isDark) Color.White.copy(alpha = 0.1f) else Color.Black.copy(alpha = 0.05f)
+            )
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text("🛡️", fontSize = 18.sp)
+                    Text(
+                        text = "Firebase Google Sign-In",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                }
+
+                Text(
+                    text = if (isFirebaseAvailable) {
+                        "Your Firebase client is active! Click below to sign in and authenticate securely with Google servers."
+                    } else {
+                        "Firebase client is in Sandbox Mode. Configure GOOGLE_WEB_CLIENT_ID and Firebase keys in the Secrets panel to activate live connections."
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                Button(
+                    onClick = {
+                        val finalClientId = webClientId ?: "1048367302732-placeholder.apps.googleusercontent.com"
+                        val gso = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
+                            .requestIdToken(finalClientId)
+                            .requestEmail()
+                            .build()
+                        val googleSignInClient = GoogleSignIn.getClient(context, gso)
+                        googleSignInClient.signOut().addOnCompleteListener {
+                            val intent = googleSignInClient.signInIntent
+                            googleSignInLauncher.launch(intent)
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(8.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (isDark) Color.White else Color(0xFF0D0D0D),
+                        contentColor = if (isDark) Color.Black else Color.White
+                    )
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Text("🌐", fontSize = 16.sp)
+                        Text(
+                            "Sign in with Google API",
+                            fontWeight = FontWeight.Bold,
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                    }
+                }
+            }
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            HorizontalDivider(modifier = Modifier.weight(1f), color = (if (isDark) Color.White else Color.Black).copy(alpha = 0.08f))
+            Text(
+                text = "OR USE LOCAL SANDBOX",
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.ExtraBold,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+            )
+            HorizontalDivider(modifier = Modifier.weight(1f), color = (if (isDark) Color.White else Color.Black).copy(alpha = 0.08f))
+        }
+
+        GoogleAccountSelectionList(
+            onSelectAccount = { email, name, photoUrl ->
+                onSelectAccount(email, name, photoUrl)
+                onDismiss()
+            },
+            isDark = isDark
+        )
+
+        Spacer(modifier = Modifier.height(4.dp))
+
+        Text(
+            text = "Sandbox selection allows you to simulate authenticated profiles with full workspace storage and zero dependencies.",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+            textAlign = TextAlign.Center,
+            modifier = Modifier.fillMaxWidth()
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun GoogleAuthBottomSheet(
+    isDark: Boolean,
+    viewModel: LinkViewModel,
+    onDismiss: () -> Unit,
+    onSelectAccount: (email: String, name: String, photoUrl: String?) -> Unit
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        dragHandle = {}
+    ) {
+        GoogleAuthFormContent(
+            isDark = isDark,
+            viewModel = viewModel,
+            onDismiss = onDismiss,
+            onSelectAccount = onSelectAccount
+        )
+    }
+}
+
+@Composable
+fun GoogleAuthDialog(
+    isDark: Boolean,
+    viewModel: LinkViewModel,
+    onDismiss: () -> Unit,
+    onSelectAccount: (email: String, name: String, photoUrl: String?) -> Unit
+) {
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            modifier = Modifier
+                .width(420.dp)
+                .clip(RoundedCornerShape(16.dp))
+                .border(
+                    width = 2.dp,
+                    color = if (isDark) Color(0xFFF1F1F1) else Color(0xFF0D0D0D),
+                    shape = RoundedCornerShape(16.dp)
+                ),
+            color = MaterialTheme.colorScheme.surface,
+            tonalElevation = 5.dp
+        ) {
+            GoogleAuthFormContent(
+                isDark = isDark,
+                viewModel = viewModel,
+                onDismiss = onDismiss,
+                onSelectAccount = onSelectAccount
+            )
+        }
+    }
+}
+
+@Composable
+fun GoogleProfileDetailsFormContent(
+    user: com.example.ui.viewmodel.GoogleUserProfile,
+    isDark: Boolean,
+    onDismiss: () -> Unit,
+    onSignOut: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(24.dp),
+        verticalArrangement = Arrangement.spacedBy(20.dp)
+    ) {
+        Spacer(modifier = Modifier.height(12.dp))
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "Google Account Info 🌐",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+
+            IconButton(onClick = onDismiss) {
+                Icon(
+                    imageVector = Icons.Default.Close,
+                    contentDescription = "Close",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(
+                containerColor = if (isDark) Color(0xFF1E1E20) else Color(0xFFF3F4F6)
+            ),
+            shape = RoundedCornerShape(12.dp),
+            border = BorderStroke(1.dp, if (isDark) Color.White.copy(alpha = 0.1f) else Color.Black.copy(alpha = 0.05f))
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                val avatarColor = when (user.displayName) {
+                    "Kaustav Roy" -> Color(0xFFFBBC05)
+                    "Kaustav Roy (Work)" -> Color(0xFF4285F4)
+                    else -> Color(0xFF34A853)
+                }
+
+                Box(
+                    modifier = Modifier
+                        .size(48.dp)
+                        .clip(CircleShape)
+                        .background(avatarColor),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = user.displayName.take(1),
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White
+                    )
+                }
+
+                Column {
+                    Text(
+                        text = user.displayName,
+                        style = MaterialTheme.typography.bodyLarge,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Text(
+                        text = user.email,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    
+                    Spacer(modifier = Modifier.height(4.dp))
+                    
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        modifier = Modifier
+                            .background(
+                                color = Color(0xFF34A853).copy(alpha = 0.12f),
+                                shape = RoundedCornerShape(4.dp)
+                            )
+                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                    ) {
+                        Text("🛡️", fontSize = 10.sp)
+                        Text(
+                            text = "Simulated Google Auth Flow",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Color(0xFF2E7D32),
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        Button(
+            onClick = {
+                onSignOut()
+                onDismiss()
+            },
+            modifier = Modifier.fillMaxWidth(),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = MaterialTheme.colorScheme.error,
+                contentColor = MaterialTheme.colorScheme.onError
+            ),
+            shape = RoundedCornerShape(8.dp)
+        ) {
+            Text("Disconnect Account & Sign Out", fontWeight = FontWeight.Bold)
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun GoogleProfileDetailsBottomSheet(
+    user: com.example.ui.viewmodel.GoogleUserProfile,
+    isDark: Boolean,
+    onDismiss: () -> Unit,
+    onSignOut: () -> Unit
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        dragHandle = {}
+    ) {
+        GoogleProfileDetailsFormContent(
+            user = user,
+            isDark = isDark,
+            onDismiss = onDismiss,
+            onSignOut = onSignOut
+        )
+    }
+}
+
+@Composable
+fun GoogleProfileDetailsDialog(
+    user: com.example.ui.viewmodel.GoogleUserProfile,
+    isDark: Boolean,
+    onDismiss: () -> Unit,
+    onSignOut: () -> Unit
+) {
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            modifier = Modifier
+                .width(400.dp)
+                .clip(RoundedCornerShape(16.dp))
+                .border(
+                    width = 2.dp,
+                    color = if (isDark) Color(0xFFF1F1F1) else Color(0xFF0D0D0D),
+                    shape = RoundedCornerShape(16.dp)
+                ),
+            color = MaterialTheme.colorScheme.surface,
+            tonalElevation = 5.dp
+        ) {
+            GoogleProfileDetailsFormContent(
+                user = user,
+                isDark = isDark,
+                onDismiss = onDismiss,
+                onSignOut = onSignOut
             )
         }
     }

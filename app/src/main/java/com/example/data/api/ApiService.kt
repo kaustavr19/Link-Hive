@@ -10,8 +10,11 @@ import com.squareup.moshi.Types
 import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
+import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.ResponseBody
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import retrofit2.Retrofit
 import retrofit2.converter.moshi.MoshiConverterFactory
 import retrofit2.http.Body
@@ -313,5 +316,83 @@ object ApiService {
             Log.e(TAG, "Failed calling Gemini search API", e)
         }
         return emptyList()
+    }
+
+    private fun unescapeHtml(text: String): String {
+        return text.replace("&amp;", "&")
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&quot;", "\"")
+            .replace("&apos;", "'")
+            .replace("&#39;", "'")
+            .replace("&#x27;", "'")
+            .replace("&nbsp;", " ")
+    }
+
+    private fun cleanScrapedTitle(title: String): String {
+        var clean = title.trim()
+        val suffixesToDelete = listOf(
+            "| Pinterest",
+            "- Pinterest",
+            "on Pinterest",
+            "| pinterest.com",
+            "- pinterest.com"
+        )
+        for (suffix in suffixesToDelete) {
+            if (clean.endsWith(suffix, ignoreCase = true)) {
+                clean = clean.substring(0, clean.length - suffix.length).trim()
+            }
+        }
+        return clean
+    }
+
+    suspend fun scrapeTitle(urlStr: String): String? {
+        return withContext(Dispatchers.IO) {
+            try {
+                val formattedUrl = if (!urlStr.startsWith("http://") && !urlStr.startsWith("https://")) {
+                    "https://$urlStr"
+                } else {
+                    urlStr
+                }
+                val request = Request.Builder()
+                    .url(formattedUrl)
+                    .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
+                    .build()
+                okHttpClient.newCall(request).execute().use { response ->
+                    if (response.isSuccessful) {
+                        val body = response.body?.string() ?: ""
+                        
+                        // Try og:title first
+                        val ogTitleRegex = Regex("""<meta\s+property=["']og:title["']\s+content=["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+                        val ogTitleMatch = ogTitleRegex.find(body)
+                        if (ogTitleMatch != null) {
+                            val candidate = unescapeHtml(ogTitleMatch.groupValues[1].trim())
+                            val cleaned = cleanScrapedTitle(candidate)
+                            if (cleaned.isNotEmpty()) return@withContext cleaned
+                        }
+                        
+                        val ogTitleRegexAlt = Regex("""<meta\s+content=["']([^"']+)["']\s+property=["']og:title["']""", RegexOption.IGNORE_CASE)
+                        val ogTitleMatchAlt = ogTitleRegexAlt.find(body)
+                        if (ogTitleMatchAlt != null) {
+                            val candidate = unescapeHtml(ogTitleMatchAlt.groupValues[1].trim())
+                            val cleaned = cleanScrapedTitle(candidate)
+                            if (cleaned.isNotEmpty()) return@withContext cleaned
+                        }
+
+                        // Try standard title tag
+                        val titleRegex = Regex("""<title[^>]*>([^<]+)</title>""", RegexOption.IGNORE_CASE)
+                        val titleMatch = titleRegex.find(body)
+                        if (titleMatch != null) {
+                            val candidate = unescapeHtml(titleMatch.groupValues[1].trim())
+                            val cleaned = cleanScrapedTitle(candidate)
+                            if (cleaned.isNotEmpty()) return@withContext cleaned
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e("ApiService", "Failed to scrape title for $urlStr", e)
+            }
+            null
+        }
     }
 }
