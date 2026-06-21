@@ -1,0 +1,6 @@
+{
+  "name": "LinkHive",
+  "description": "An offline-first app to save, auto-organize, and search your collection of links with Gemini AI.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
