@@ -311,6 +311,20 @@ class LinkViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun updateLinkFields(linkId: String, name: String, url: String, summary: String, category: String) {
+        viewModelScope.launch {
+            val existing = allLinks.value.find { it.id == linkId } ?: return@launch
+            val updated = existing.copy(
+                name = name.trim(),
+                url = url.trim(),
+                summary = summary.trim(),
+                category = category.trim().lowercase()
+            )
+            repository.updateLink(updated)
+            showToast("Link updated successfully")
+        }
+    }
+
     // --- Search Logic ---
 
     fun onSearchQueryChanged(q: String) {

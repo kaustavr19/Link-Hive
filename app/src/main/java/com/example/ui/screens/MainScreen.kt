@@ -9,9 +9,11 @@ import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
@@ -59,6 +61,11 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Star
+import androidx.activity.compose.BackHandler
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.isImeVisible
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -110,6 +117,14 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.material3.LocalTextStyle
 import coil.compose.AsyncImage
 import com.example.data.api.ApiService
 import com.example.data.model.CategoryRule
@@ -145,9 +160,12 @@ fun MainScreen(
     val searchState by viewModel.searchState.collectAsState()
     val feedbackMessage by viewModel.feedbackMessage.collectAsState()
     val unreadOnlyFilter by viewModel.unreadOnlyFilter.collectAsState()
+    val customCategories by viewModel.customCategories.collectAsState()
 
     // Add Sheet / Dialog state
     var isAddSheetOpen by remember { mutableStateOf(false) }
+    var linkToEdit by remember { mutableStateOf<LinkRecord?>(null) }
+    var isCreateGroupDialogOpen by remember { mutableStateOf(false) }
 
     // Display localized feedback alerts (like brief Toast)
     LaunchedEffect(feedbackMessage) {
@@ -236,7 +254,8 @@ fun MainScreen(
                                 onCycleRead = { viewModel.cycleReadState(it) },
                                 onDelete = { viewModel.deleteLink(it.id) },
                                 aiReasons = searchState.aiMatches,
-                                onInteract = { viewModel.markAsRead(it) }
+                                onInteract = { viewModel.markAsRead(it) },
+                                onEdit = { linkToEdit = it }
                             )
                         }
                     }
@@ -319,7 +338,8 @@ fun MainScreen(
                         customCategories = viewModel.customCategories.collectAsState().value,
                         selectedCustomCategory = viewModel.selectedCustomCategory.collectAsState().value,
                         onSelectCustomCategory = { viewModel.selectCustomCategory(it) },
-                        isDark = isDarkTheme
+                        isDark = isDarkTheme,
+                        onCreateGroupClick = { isCreateGroupDialogOpen = true }
                     )
 
                     Spacer(modifier = Modifier.height(16.dp))
@@ -375,7 +395,8 @@ fun MainScreen(
                                 onCycleRead = { viewModel.cycleReadState(it) },
                                 onDelete = { viewModel.deleteLink(it.id) },
                                 aiReasons = searchState.aiMatches,
-                                onInteract = { viewModel.markAsRead(it) }
+                                onInteract = { viewModel.markAsRead(it) },
+                                onEdit = { linkToEdit = it }
                             )
                         }
                     }
@@ -428,6 +449,27 @@ fun MainScreen(
                     isDark = isDarkTheme
                 )
             }
+        }
+
+        linkToEdit?.let { link ->
+            EditLinkDialog(
+                link = link,
+                customCategories = customCategories,
+                isDark = isDarkTheme,
+                onDismiss = { linkToEdit = null },
+                onUpdate = { name, url, summary, category ->
+                    viewModel.updateLinkFields(link.id, name, url, summary, category)
+                }
+            )
+        }
+
+        if (isCreateGroupDialogOpen) {
+            CreateGroupDialog(
+                isDark = isDarkTheme,
+                onDismiss = { isCreateGroupDialogOpen = false },
+                onAddCustomCategory = { name, emoji, col -> viewModel.addCustomCategory(name, emoji, col) },
+                onSelectCustomCategory = { viewModel.selectCustomCategory(it) }
+            )
         }
     }
 }
@@ -769,7 +811,8 @@ fun DesktopLinkGrid(
     onCycleRead: (LinkRecord) -> Unit,
     onDelete: (LinkRecord) -> Unit,
     aiReasons: Map<String, String>,
-    onInteract: (LinkRecord) -> Unit
+    onInteract: (LinkRecord) -> Unit,
+    onEdit: (LinkRecord) -> Unit
 ) {
     LazyVerticalGrid(
         columns = GridCells.Adaptive(minSize = 320.dp),
@@ -788,7 +831,8 @@ fun DesktopLinkGrid(
                 onDelete = { onDelete(link) },
                 aiReason = aiReasons[link.id],
                 isMobile = false,
-                onInteract = onInteract
+                onInteract = onInteract,
+                onEdit = { onEdit(link) }
             )
         }
     }
@@ -886,7 +930,8 @@ fun CategoryScrollRail(
     customCategories: List<String>,
     selectedCustomCategory: String?,
     onSelectCustomCategory: (String?) -> Unit,
-    isDark: Boolean
+    isDark: Boolean,
+    onCreateGroupClick: () -> Unit
 ) {
     val scrollState = rememberScrollState()
     val categories = listOf(
@@ -903,8 +948,44 @@ fun CategoryScrollRail(
             .fillMaxWidth()
             .horizontalScroll(scrollState)
             .padding(horizontal = 16.dp, vertical = 8.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically
     ) {
+        // --- Standalone CTA to Create a Tab/Group at the very beginning ---
+        Box(
+            modifier = Modifier
+                .clip(RoundedCornerShape(20.dp))
+                .background(
+                    if (isDark) Color(0xFF1E1E21) else Color(0xFFE2E8F0)
+                )
+                .border(
+                    1.5.dp, 
+                    if (isDark) Color.White.copy(alpha = 0.2f) else Color.Black.copy(alpha = 0.25f), 
+                    RoundedCornerShape(20.dp)
+                )
+                .clickable { onCreateGroupClick() }
+                .padding(horizontal = 14.dp, vertical = 8.dp)
+                .testTag("create_group_cta_tab"),
+            contentAlignment = Alignment.Center
+        ) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Add,
+                    contentDescription = "Create Group Tab Only",
+                    tint = if (isDark) Color.White else Color.Black,
+                    modifier = Modifier.size(16.dp)
+                )
+                Text(
+                    text = "New Group",
+                    color = if (isDark) Color.White else Color.Black,
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        }
         categories.forEach { (target, label) ->
             val isActive = activeTab == target && selectedCustomCategory == null
             val accentColor = if (target == NavigationTarget.ALL) {
@@ -1066,7 +1147,8 @@ fun MobileLinkList(
     onCycleRead: (LinkRecord) -> Unit,
     onDelete: (LinkRecord) -> Unit,
     aiReasons: Map<String, String>,
-    onInteract: (LinkRecord) -> Unit
+    onInteract: (LinkRecord) -> Unit,
+    onEdit: (LinkRecord) -> Unit
 ) {
     LazyColumn(
         modifier = Modifier
@@ -1085,7 +1167,8 @@ fun MobileLinkList(
                 onDelete = { onDelete(link) },
                 aiReason = aiReasons[link.id],
                 isMobile = true,
-                onInteract = onInteract
+                onInteract = onInteract,
+                onEdit = { onEdit(link) }
             )
         }
     }
@@ -1093,6 +1176,7 @@ fun MobileLinkList(
 
 // --- ELEVATED CUSTOM ITEM CARD COMPONENT ---
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun LinkCardItem(
     link: LinkRecord,
@@ -1104,7 +1188,8 @@ fun LinkCardItem(
     onDelete: () -> Unit,
     aiReason: String?,
     isMobile: Boolean,
-    onInteract: (LinkRecord) -> Unit
+    onInteract: (LinkRecord) -> Unit,
+    onEdit: () -> Unit
 ) {
     val context = LocalContext.current
     var isMenuExpanded by remember { mutableStateOf(false) }
@@ -1117,15 +1202,20 @@ fun LinkCardItem(
             .fillMaxWidth()
             .neoBrutalShadow(isDark, cornerRadiusDp = 8f)
             .animateContentSize()
-            .clickable {
-                try {
-                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(link.url))
-                    context.startActivity(intent)
-                    onInteract(link)
-                } catch (e: Exception) {
-                    Toast.makeText(context, "Invalid URL format", Toast.LENGTH_SHORT).show()
+            .combinedClickable(
+                onClick = {
+                    try {
+                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(link.url))
+                        context.startActivity(intent)
+                        onInteract(link)
+                    } catch (e: Exception) {
+                        Toast.makeText(context, "Invalid URL format", Toast.LENGTH_SHORT).show()
+                    }
+                },
+                onLongClick = {
+                    isMenuExpanded = true
                 }
-            }
+            )
             .testTag("link_record_card_${link.id}"),
         colors = CardDefaults.cardColors(
             containerColor = CategoryColors.getCardBackground(link.category, isDark),
@@ -1242,6 +1332,13 @@ fun LinkCardItem(
                                     onClick = {
                                         isMenuExpanded = false
                                         onCycleRead(link) // Or custom cycle setting
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Edit Link ✏️") },
+                                    onClick = {
+                                        isMenuExpanded = false
+                                        onEdit()
                                     }
                                 )
                                 DropdownMenuItem(
@@ -1723,16 +1820,61 @@ fun AddLinkFormContent(
     onCategorySelect: (String) -> Unit,
     customCategories: List<String>,
     onAddCustomCategory: (String, String, String) -> Unit,
+    onDismiss: () -> Unit,
     onSave: () -> Unit,
     isDark: Boolean
 ) {
     val clipboard = LocalClipboardManager.current
     var selectedEmoji by remember { mutableStateOf("📂") }
     var selectedColorHex by remember { mutableStateOf("#9CA3AF") }
+    var newCustomCategoryInput by remember { mutableStateOf("") }
+
+    var showConfirmationDialog by remember { mutableStateOf(false) }
+
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val focusManager = LocalFocusManager.current
+    val isKeyboardVisible = WindowInsets.isImeVisible
+
+    BackHandler(enabled = true) {
+        if (isKeyboardVisible) {
+            keyboardController?.hide()
+            focusManager.clearFocus()
+        } else {
+            showConfirmationDialog = true
+        }
+    }
+
+    if (showConfirmationDialog) {
+        AlertDialog(
+            onDismissRequest = { showConfirmationDialog = false },
+            title = { Text("Discard progress?") },
+            text = { Text("Are you sure you want to discard your progress and close this popup?") },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showConfirmationDialog = false
+                        onDismiss()
+                    }
+                ) {
+                    Text("Discard")
+                }
+            },
+            dismissButton = {
+                Button(
+                    onClick = { showConfirmationDialog = false }
+                ) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    val scrollState = rememberScrollState()
 
     Column(
         modifier = Modifier
             .fillMaxWidth()
+            .verticalScroll(scrollState)
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
@@ -1832,7 +1974,6 @@ fun AddLinkFormContent(
             )
             Spacer(modifier = Modifier.height(4.dp))
 
-            var newCustomCategoryInput by remember { mutableStateOf("") }
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -1868,109 +2009,28 @@ fun AddLinkFormContent(
                 }
             }
 
-            Spacer(modifier = Modifier.height(8.dp))
+            Spacer(modifier = Modifier.height(12.dp))
 
-            // Emoji Selection Row
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = "Emoji: ",
-                    style = MaterialTheme.typography.labelMedium,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.width(70.dp)
-                )
-                val emojis = listOf("📂", "🚀", "💡", "🎨", "🔬", "🍿", "🎧", "🎮", "🍔", "📈", "✈️", "❤️")
-                val scrollStateEmoji = rememberScrollState()
-                Row(
-                    modifier = Modifier
-                        .weight(1f)
-                        .horizontalScroll(scrollStateEmoji),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    emojis.forEach { emoji ->
-                        val isSelected = selectedEmoji == emoji
-                        Box(
-                            modifier = Modifier
-                                .size(34.dp)
-                                .clip(CircleShape)
-                                .background(if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.15f) else Color.Transparent)
-                                .border(1.5.dp, if (isSelected) MaterialTheme.colorScheme.primary else Color.Transparent, CircleShape)
-                                .clickable { selectedEmoji = emoji }
-                                .padding(4.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(text = emoji, fontSize = 16.sp)
-                        }
-                    }
-                }
-            }
-
-            Spacer(modifier = Modifier.height(8.dp))
-
-            // Color Selection Row
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = "Color: ",
-                    style = MaterialTheme.typography.labelMedium,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.width(70.dp)
-                )
-                val colorsMap = listOf(
-                    "Blue" to "#60A5FA",
-                    "Pink" to "#F472B6",
-                    "Red" to "#F87171",
-                    "Amber" to "#FBBF24",
-                    "Green" to "#34D399",
-                    "Purple" to "#C084FC",
-                    "Orange" to "#FB923C"
-                )
-                val scrollStateColor = rememberScrollState()
-                Row(
-                    modifier = Modifier
-                        .weight(1f)
-                        .horizontalScroll(scrollStateColor),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    colorsMap.forEach { (colorName, colorHex) ->
-                        val isSelected = selectedColorHex == colorHex
-                        val swatchColor = Color(android.graphics.Color.parseColor(colorHex))
-                        Box(
-                            modifier = Modifier
-                                .size(32.dp)
-                                .clip(CircleShape)
-                                .background(swatchColor)
-                                .border(
-                                    2.dp,
-                                    if (isSelected) (if (isDark) Color.White else Color.Black) else Color.Transparent,
-                                    CircleShape
-                                )
-                                .clickable { selectedColorHex = colorHex }
-                        ) {
-                            if (isSelected) {
-                                Icon(
-                                    imageVector = Icons.Default.Check,
-                                    contentDescription = "Selected",
-                                    tint = Color.White,
-                                    modifier = Modifier
-                                        .size(16.dp)
-                                        .align(Alignment.Center)
-                                )
-                            }
-                        }
-                    }
-                }
-            }
+            CustomColorAndEmojiSelector(
+                selectedEmoji = selectedEmoji,
+                onEmojiChange = { selectedEmoji = it },
+                selectedColorHex = selectedColorHex,
+                onColorHexChange = { selectedColorHex = it },
+                isDark = isDark
+            )
         }
 
         Spacer(modifier = Modifier.height(8.dp))
 
         Button(
-            onClick = onSave,
+            onClick = {
+                val trimmed = newCustomCategoryInput.trim().lowercase()
+                if (trimmed.isNotBlank()) {
+                    onAddCustomCategory(trimmed, selectedEmoji, selectedColorHex)
+                    onCategorySelect(trimmed)
+                }
+                onSave()
+            },
             modifier = Modifier
                 .fillMaxWidth()
                 .height(48.dp)
@@ -2014,6 +2074,7 @@ fun AddLinkBottomSheet(
             onCategorySelect = onCategorySelect,
             customCategories = customCategories,
             onAddCustomCategory = onAddCustomCategory,
+            onDismiss = onDismiss,
             onSave = onSave,
             isDark = isDark
         )
@@ -2051,8 +2112,533 @@ fun AddLinkDialog(
                 onCategorySelect = onCategorySelect,
                 customCategories = customCategories,
                 onAddCustomCategory = onAddCustomCategory,
+                onDismiss = onDismiss,
                 onSave = onSave,
                 isDark = isDark
+            )
+        }
+    }
+}
+
+@Composable
+fun EditLinkDialog(
+    link: LinkRecord,
+    customCategories: List<String>,
+    isDark: Boolean,
+    onDismiss: () -> Unit,
+    onUpdate: (name: String, url: String, summary: String, category: String) -> Unit
+) {
+    var name by remember { mutableStateOf(link.name) }
+    var url by remember { mutableStateOf(link.url) }
+    var summary by remember { mutableStateOf(link.summary ?: "") }
+    var selectedCategory by remember { mutableStateOf(link.category) }
+
+    val allCategories = listOf("jobs", "socials", "videos", "articles") + customCategories + listOf("uncategorized")
+
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            modifier = Modifier
+                .width(440.dp)
+                .clip(RoundedCornerShape(12.dp))
+                .border(
+                    width = 2.dp,
+                    color = if (isDark) Color(0xFFF1F1F1) else Color(0xFF0D0D0D),
+                    shape = RoundedCornerShape(12.dp)
+                ),
+            color = MaterialTheme.colorScheme.surface,
+            tonalElevation = 5.dp
+        ) {
+            val scrollState = rememberScrollState()
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(scrollState)
+                    .padding(20.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                Text(
+                    text = "Edit Link Details ✏️",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text("Title / Name") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = MaterialTheme.colorScheme.primary
+                    )
+                )
+
+                OutlinedTextField(
+                    value = url,
+                    onValueChange = { url = it },
+                    label = { Text("URL / Link") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = MaterialTheme.colorScheme.primary
+                    )
+                )
+
+                OutlinedTextField(
+                    value = summary,
+                    onValueChange = { summary = it },
+                    label = { Text("Description / Summary") },
+                    maxLines = 4,
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = MaterialTheme.colorScheme.primary
+                    )
+                )
+
+                // Category Selector
+                Column {
+                    Text(
+                        text = "Category (Group):",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    @OptIn(ExperimentalLayoutApi::class)
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        allCategories.distinct().forEach { cat ->
+                            val isActive = selectedCategory == cat
+                            val col = CategoryColors.getAccent(cat, isDark)
+                            val emoji = CategoryColors.getEmoji(cat)
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .background(if (isActive) col else Color.Transparent)
+                                    .border(2.dp, col, RoundedCornerShape(6.dp))
+                                    .clickable { selectedCategory = cat }
+                                    .padding(horizontal = 12.dp, vertical = 6.dp)
+                            ) {
+                                Text(
+                                    text = "$emoji ${cat.uppercase()}",
+                                    color = if (isActive) Color.White else col,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(4.dp))
+
+                // Actions
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Button(
+                        onClick = onDismiss,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = Color.Transparent,
+                            contentColor = MaterialTheme.colorScheme.onSurfaceVariant
+                        ),
+                        modifier = Modifier.padding(end = 8.dp)
+                    ) {
+                        Text("Cancel", fontWeight = FontWeight.Bold)
+                    }
+
+                    Button(
+                        onClick = {
+                            if (name.isNotBlank() && url.isNotBlank()) {
+                                onUpdate(name, url, summary, selectedCategory)
+                                onDismiss()
+                            }
+                        },
+                        shape = RoundedCornerShape(6.dp),
+                        border = BorderStroke(2.dp, if (isDark) Color(0xFFF1F1F1) else Color(0xFF0D0D0D)),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.primary,
+                            contentColor = MaterialTheme.colorScheme.onPrimary
+                        )
+                    ) {
+                        Text("Save Changes", fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun CreateGroupDialog(
+    isDark: Boolean,
+    onDismiss: () -> Unit,
+    onAddCustomCategory: (String, String, String) -> Unit,
+    onSelectCustomCategory: (String?) -> Unit
+) {
+    var groupName by remember { mutableStateOf("") }
+    var selectedEmoji by remember { mutableStateOf("📂") }
+    var selectedColorHex by remember { mutableStateOf("#9CA3AF") }
+
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            modifier = Modifier
+                .width(400.dp)
+                .clip(RoundedCornerShape(12.dp))
+                .border(
+                    width = 2.dp,
+                    color = if (isDark) Color(0xFFF1F1F1) else Color(0xFF0D0D0D),
+                    shape = RoundedCornerShape(12.dp)
+                ),
+            color = MaterialTheme.colorScheme.surface,
+            tonalElevation = 5.dp
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(20.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                Text(
+                    text = "Create New Group ➕",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+
+                OutlinedTextField(
+                    value = groupName,
+                    onValueChange = { groupName = it },
+                    label = { Text("Group Name / Tab Name") },
+                    singleLine = true,
+                    placeholder = { Text("e.g. Design, Coding, Cooking") },
+                    modifier = Modifier.fillMaxWidth().testTag("new_group_name_input"),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = MaterialTheme.colorScheme.primary
+                    )
+                )
+
+                CustomColorAndEmojiSelector(
+                    selectedEmoji = selectedEmoji,
+                    onEmojiChange = { selectedEmoji = it },
+                    selectedColorHex = selectedColorHex,
+                    onColorHexChange = { selectedColorHex = it },
+                    isDark = isDark
+                )
+
+                Spacer(modifier = Modifier.height(4.dp))
+
+                // Actions Button Row
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Button(
+                        onClick = onDismiss,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = Color.Transparent,
+                            contentColor = MaterialTheme.colorScheme.onSurfaceVariant
+                        ),
+                        modifier = Modifier.padding(end = 8.dp)
+                    ) {
+                        Text("Cancel", fontWeight = FontWeight.Bold)
+                    }
+
+                    Button(
+                        onClick = {
+                            val trimmed = groupName.trim().lowercase()
+                            if (trimmed.isNotBlank()) {
+                                onAddCustomCategory(trimmed, selectedEmoji, selectedColorHex)
+                                onSelectCustomCategory(trimmed)
+                                onDismiss()
+                            }
+                        },
+                        shape = RoundedCornerShape(6.dp),
+                        enabled = groupName.isNotBlank(),
+                        border = BorderStroke(2.dp, if (isDark) Color(0xFFF1F1F1) else Color(0xFF0D0D0D)),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.primary,
+                            contentColor = MaterialTheme.colorScheme.onPrimary
+                        )
+                    ) {
+                        Text("Create Group", fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun CustomColorAndEmojiSelector(
+    selectedEmoji: String,
+    onEmojiChange: (String) -> Unit,
+    selectedColorHex: String,
+    onColorHexChange: (String) -> Unit,
+    isDark: Boolean
+) {
+    val presets = listOf("📂", "🚀", "💡", "🎨", "🔬", "🍿", "🎧", "🎮", "🍔", "📈", "✈️", "❤️")
+    val defaultColors = listOf(
+        "Blue" to "#60A5FA",
+        "Pink" to "#F472B6",
+        "Red" to "#F87171",
+        "Amber" to "#FBBF24",
+        "Green" to "#34D399",
+        "Purple" to "#C084FC",
+        "Orange" to "#FB923C"
+    )
+
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        // ------------------ EMOJI LIBRARY & FIELD ------------------
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text(
+                text = "Group Icon / Emoji 📂",
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                // Large styled emoji preview/input displaying current emoji and letting keyboard type any emoji
+                OutlinedTextField(
+                    value = selectedEmoji,
+                    onValueChange = { input ->
+                        // Accept any emoji pasted or typed (limited to 4 characters for composite emojis)
+                        if (input.length <= 4) {
+                            onEmojiChange(input)
+                        }
+                    },
+                    modifier = Modifier.width(90.dp),
+                    singleLine = true,
+                    textStyle = LocalTextStyle.current.copy(textAlign = TextAlign.Center, fontSize = 22.sp),
+                    placeholder = { Text("📂", fontSize = 22.sp, textAlign = TextAlign.Center) },
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = MaterialTheme.colorScheme.primary,
+                        unfocusedBorderColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+                    )
+                )
+
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Text(
+                        text = "Or choose a preset below:",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    val scrollStateEmoji = rememberScrollState()
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(scrollStateEmoji),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        presets.forEach { emo ->
+                            val isSelected = selectedEmoji == emo
+                            Box(
+                                modifier = Modifier
+                                    .size(34.dp)
+                                    .clip(CircleShape)
+                                    .background(if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.15f) else Color.Transparent)
+                                    .border(1.5.dp, if (isSelected) MaterialTheme.colorScheme.primary else Color.Transparent, CircleShape)
+                                    .clickable { onEmojiChange(emo) }
+                                    .padding(4.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(text = emo, fontSize = 16.sp)
+                            }
+                        }
+                    }
+                }
+            }
+            Text(
+                text = "💡 Tap the box above to type or paste ANY emoji from your device's built-in keyboard!",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f)
+            )
+        }
+
+        Spacer(modifier = Modifier.height(4.dp))
+
+        // ------------------ COLOR ACCENT & WHEEL ------------------
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(
+                text = "Group Color Accent 🎨",
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+
+            // Preset Quick Swatches
+            val scrollStateColor = rememberScrollState()
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(scrollStateColor),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                defaultColors.forEach { (_, colorHex) ->
+                    val isSelected = selectedColorHex.lowercase() == colorHex.lowercase()
+                    val swatchColor = Color(android.graphics.Color.parseColor(colorHex))
+                    Box(
+                        modifier = Modifier
+                            .size(34.dp)
+                            .clip(CircleShape)
+                            .background(swatchColor)
+                            .border(
+                                2.dp,
+                                if (isSelected) (if (isDark) Color.White else Color.Black) else Color.Transparent,
+                                CircleShape
+                            )
+                            .clickable { onColorHexChange(colorHex) }
+                    ) {
+                        if (isSelected) {
+                            Icon(
+                                imageVector = Icons.Default.Check,
+                                contentDescription = "Selected",
+                                tint = Color.White,
+                                modifier = Modifier
+                                    .size(16.dp)
+                                    .align(Alignment.Center)
+                            )
+                        }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(4.dp))
+
+            // The Spectrum Hue Slider (Wheel)
+            SimpleHuePicker(
+                selectedColorHex = selectedColorHex,
+                onColorChanged = onColorHexChange
+            )
+        }
+    }
+}
+
+@Composable
+fun SimpleHuePicker(
+    selectedColorHex: String,
+    onColorChanged: (String) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    var width by remember { mutableStateOf(10f) }
+
+    val hsv = remember(selectedColorHex) {
+        val arr = FloatArray(3)
+        try {
+            android.graphics.Color.colorToHSV(android.graphics.Color.parseColor(selectedColorHex), arr)
+        } catch (e: Exception) {
+            arr[0] = 0f
+            arr[1] = 0.9f
+            arr[2] = 0.9f
+        }
+        arr
+    }
+
+    val currentHue = hsv[0]
+
+    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text(
+                text = "Color Wheel Spectrum Slider:",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            // Color preview bubble
+            Box(
+                modifier = Modifier
+                    .size(18.dp)
+                    .clip(CircleShape)
+                    .background(Color(android.graphics.Color.HSVToColor(hsv)))
+                    .border(1.dp, if (selectedColorHex.lowercase() == "#ffffff") Color.Gray else Color.Transparent, CircleShape)
+            )
+            // Show Hex text
+            Text(
+                text = selectedColorHex.uppercase(),
+                style = MaterialTheme.typography.labelLarge,
+                fontFamily = FontFamily.Monospace,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.primary
+            )
+        }
+
+        // The rainbow canvas slider!
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(18.dp)
+                .clip(RoundedCornerShape(9.dp))
+                .background(
+                    brush = Brush.horizontalGradient(
+                        colors = listOf(
+                            Color(0xFFFF0000),
+                            Color(0xFFFFFF00),
+                            Color(0xFF00FF00),
+                            Color(0xFF00FFFF),
+                            Color(0xFF0000FF),
+                            Color(0xFFFF00FF),
+                            Color(0xFFFF0000)
+                        )
+                    )
+                )
+                .pointerInput(Unit) {
+                    detectTapGestures { offset ->
+                        val ratio = (offset.x / width).coerceIn(0f, 1f)
+                        val hue = ratio * 360f
+                        val newColorInt = android.graphics.Color.HSVToColor(floatArrayOf(hue, 0.91f, 0.91f))
+                        val hex = String.format("#%06X", 0xFFFFFF and newColorInt)
+                        onColorChanged(hex)
+                    }
+                }
+                .pointerInput(Unit) {
+                    detectDragGestures { change, _ ->
+                        change.consume()
+                        val ratio = (change.position.x / width).coerceIn(0f, 1f)
+                        val hue = ratio * 360f
+                        val newColorInt = android.graphics.Color.HSVToColor(floatArrayOf(hue, 0.91f, 0.91f))
+                        val hex = String.format("#%06X", 0xFFFFFF and newColorInt)
+                        onColorChanged(hex)
+                    }
+                }
+                .onGloballyPositioned { coordinates ->
+                    if (coordinates.size.width > 0) {
+                        width = coordinates.size.width.toFloat()
+                    }
+                }
+        ) {
+            // Draw a sliding indicator bubble
+            val indicatorRatio = currentHue / 360f
+            val density = LocalDensity.current
+            val indicatorX = indicatorRatio * width
+            val indicatorXDp = with(density) { indicatorX.toDp() }
+
+            Box(
+                modifier = Modifier
+                    .offset(x = (indicatorXDp - 9.dp).coerceAtLeast(0.dp))
+                    .size(18.dp)
+                    .clip(CircleShape)
+                    .border(2.5.dp, Color.White, CircleShape)
+                    .background(Color.Transparent)
             )
         }
     }
